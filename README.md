@@ -1,5 +1,31 @@
 # Welcome to your Expo app 👋
 
+## Copilot Multi-Agent Workflow
+
+This repository includes workspace custom agents and instructions focused on token efficiency and implementation quality.
+
+### Available custom agents
+
+- Discovery Agent: read-only context mapping and risk analysis.
+- Design Agent: phased implementation planning with verification.
+- Implementation Agent: incremental coding with validation.
+- Review Agent: regression and test-gap auditing.
+
+### Prompt shortcuts
+
+- /Discover Risk
+- /Implement Incremental
+- /Review Regression
+
+### Files
+
+- .github/copilot-instructions.md
+- .github/agents/*.agent.md
+- .github/instructions/*.instructions.md
+- .github/prompts/*.prompt.md
+
+Tip: keep global instructions concise and put domain-specific guidance in scoped instruction files to reduce context usage.
+
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 
 ## Get started
