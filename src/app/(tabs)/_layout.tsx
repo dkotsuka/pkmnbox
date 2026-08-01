@@ -17,6 +17,7 @@ export default function TabLayout() {
     <SaveSyncProvider>
       <Tabs>
         <Tabs.Screen name="index" options={{ title: "Home" }} />
+        <Tabs.Screen name="pokedex" options={{ title: "Pokedex" }} />
         <Tabs.Screen name="about" options={{ title: "About" }} />
         <Tabs.Screen name="settings" options={{ title: "Settings" }} />
       </Tabs>
@@ -31,6 +32,11 @@ function WebLayout() {
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.navbar}>
         <NavItem href="/" label="Home" isActive={pathname === "/"} />
+        <NavItem
+          href="/pokedex"
+          label="Pokedex"
+          isActive={pathname.startsWith("/pokedex")}
+        />
         <NavItem
           href="/about"
           label="About"
@@ -55,7 +61,7 @@ function NavItem({
   label,
   isActive,
 }: {
-  href: "/" | "/about" | "/settings";
+  href: "/" | "/pokedex" | "/about" | "/settings";
   label: string;
   isActive: boolean;
 }) {

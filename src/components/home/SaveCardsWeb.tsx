@@ -4,11 +4,19 @@ import type { DetectedSaveFile } from "@/utils/saveSyncService";
 
 interface SaveCardsWebProps {
   saves: DetectedSaveFile[];
+  columns: number;
 }
 
-export function SaveCardsWeb({ saves }: SaveCardsWebProps) {
+export function SaveCardsWeb({ saves, columns }: SaveCardsWebProps) {
   return (
-    <View style={styles.webCardsGrid}>
+    <View
+      style={[
+        styles.webCardsGrid,
+        columns === 3 && styles.webCardsGridThree,
+        columns === 2 && styles.webCardsGridTwo,
+        columns === 1 && styles.webCardsGridOne,
+      ]}
+    >
       {saves.map((saveFile) => {
         const hasPlayTime =
           saveFile.playTimeHours != null && saveFile.playTimeMinutes != null;
@@ -25,7 +33,12 @@ export function SaveCardsWeb({ saves }: SaveCardsWebProps) {
         return (
           <View
             key={saveFile.uri}
-            style={[styles.saveCard, styles.saveCardWeb]}
+            style={[
+              styles.saveCard,
+              columns === 3 && styles.saveCardThree,
+              columns === 2 && styles.saveCardTwo,
+              columns === 1 && styles.saveCardOne,
+            ]}
           >
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderRow}>
@@ -87,23 +100,41 @@ const styles = StyleSheet.create({
   webCardsGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: 12,
+  },
+  webCardsGridThree: {
+    justifyContent: "space-between",
+  },
+  webCardsGridTwo: {
+    justifyContent: "space-between",
+  },
+  webCardsGridOne: {
+    justifyContent: "stretch",
   },
   saveCard: {
     borderWidth: 1,
     borderColor: "#d7e0ea",
-    borderRadius: 16,
-    padding: 14,
-    gap: 12,
+    borderRadius: 12,
+    padding: 12,
+    gap: 10,
     backgroundColor: "#f8fbff",
     shadowColor: "#0f172a",
     shadowOpacity: 0.08,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 5 },
     elevation: 2,
   },
-  saveCardWeb: {
+  saveCardThree: {
+    width: "32%",
+    minHeight: 250,
+  },
+  saveCardTwo: {
     width: "49%",
+    minHeight: 240,
+  },
+  saveCardOne: {
+    width: "100%",
+    minHeight: 220,
   },
   cardHeader: {
     gap: 2,
@@ -118,7 +149,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   cardTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "700",
     color: "#0f172a",
   },
@@ -144,7 +175,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   metaLine: {
-    fontSize: 14,
+    fontSize: 13,
     color: "#334155",
   },
   metricsRow: {
@@ -153,7 +184,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   metricPill: {
-    minWidth: 104,
+    minWidth: 96,
     flexGrow: 1,
     borderRadius: 12,
     backgroundColor: "#ffffff",
@@ -164,7 +195,7 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   metricValue: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "700",
     color: "#0f172a",
   },

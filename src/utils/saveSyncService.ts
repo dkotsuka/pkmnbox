@@ -5,6 +5,7 @@ import {
   base64ToUint8Array,
   parseSaveFile,
   parseSaveMetadata,
+  type PokemonStatus,
 } from "@/utils/saveParser";
 
 export type SyncState = "idle" | "syncing" | "error";
@@ -26,6 +27,7 @@ export interface DetectedSaveFile {
   seenCount: number | null;
   ownedCount: number | null;
   pokemonCount: number | null;
+  pokedexStatuses: PokemonStatus[];
 }
 
 export interface SaveSyncSnapshot {
@@ -279,6 +281,7 @@ function emptySaveMetadata(): {
   seenCount: number | null;
   ownedCount: number | null;
   pokemonCount: number | null;
+  pokedexStatuses: PokemonStatus[];
 } {
   return {
     generationLabel: null,
@@ -292,6 +295,7 @@ function emptySaveMetadata(): {
     seenCount: null,
     ownedCount: null,
     pokemonCount: null,
+    pokedexStatuses: [],
   };
 }
 
@@ -307,10 +311,12 @@ function parseSaveMetadataSafe(saveBytes: Uint8Array): {
   seenCount: number | null;
   ownedCount: number | null;
   pokemonCount: number | null;
+  pokedexStatuses: PokemonStatus[];
 } {
   try {
     const metadata = parseSaveMetadata(saveBytes);
-    const pokemonCount = parseSaveFile(saveBytes).filter(
+    const pokedexStatuses = parseSaveFile(saveBytes);
+    const pokemonCount = pokedexStatuses.filter(
       (pokemon) => pokemon.isOwned,
     ).length;
 
@@ -326,6 +332,7 @@ function parseSaveMetadataSafe(saveBytes: Uint8Array): {
       seenCount: metadata.seenCount,
       ownedCount: metadata.ownedCount,
       pokemonCount,
+      pokedexStatuses,
     };
   } catch {
     return emptySaveMetadata();
@@ -344,6 +351,7 @@ async function resolveSaveMetadataFromUri(uri: string): Promise<{
   seenCount: number | null;
   ownedCount: number | null;
   pokemonCount: number | null;
+  pokedexStatuses: PokemonStatus[];
 }> {
   try {
     const base64 = await fileSystemCompat.readAsStringAsync(uri, {
@@ -388,7 +396,34 @@ async function resolveWebSaveEntry(
     seenCount: metadata.seenCount,
     ownedCount: metadata.ownedCount,
     pokemonCount: metadata.pokemonCount,
+    pokedexStatuses: metadata.pokedexStatuses,
   };
+}
+
+function hasPokedexStatusChanged(
+  previous: PokemonStatus[],
+  next: PokemonStatus[],
+): boolean {
+  if (previous.length !== next.length) {
+    return true;
+  }
+
+  for (let i = 0; i < previous.length; i++) {
+    const a = previous[i];
+    const b = next[i];
+
+    if (
+      !a ||
+      !b ||
+      a.id !== b.id ||
+      a.isSeen !== b.isSeen ||
+      a.isOwned !== b.isOwned
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function hasSnapshotChanged(
@@ -418,7 +453,8 @@ function hasSnapshotChanged(
       a.playTimeMinutes !== b.playTimeMinutes ||
       a.seenCount !== b.seenCount ||
       a.ownedCount !== b.ownedCount ||
-      a.pokemonCount !== b.pokemonCount
+      a.pokemonCount !== b.pokemonCount ||
+      hasPokedexStatusChanged(a.pokedexStatuses, b.pokedexStatuses)
     ) {
       return true;
     }

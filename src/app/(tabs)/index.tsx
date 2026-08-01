@@ -1,4 +1,11 @@
-import { Platform, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { SaveCardsMobile } from "@/components/home/SaveCardsMobile";
@@ -8,9 +15,17 @@ import { useSaveSync } from "@/hooks/saveSyncContext";
 export default function HomeScreen() {
   const { snapshot } = useSaveSync();
   const isWeb = Platform.OS === "web";
+  const { width } = useWindowDimensions();
   const orderedSaves = [...snapshot.saves].sort(
     (a, b) => (b.modifiedAt ?? 0) - (a.modifiedAt ?? 0),
   );
+  const saveGridColumns = isWeb
+    ? width >= 1440
+      ? 3
+      : width >= 960
+        ? 2
+        : 1
+    : 1;
   const lastSyncText = snapshot.lastSyncAt
     ? new Date(snapshot.lastSyncAt).toLocaleString()
     : "never";
@@ -55,7 +70,7 @@ export default function HomeScreen() {
           <Text style={styles.sectionTitle}>Saves carregados</Text>
           {orderedSaves.length > 0 ? (
             isWeb ? (
-              <SaveCardsWeb saves={orderedSaves} />
+              <SaveCardsWeb saves={orderedSaves} columns={saveGridColumns} />
             ) : (
               <SaveCardsMobile saves={orderedSaves} />
             )
@@ -80,6 +95,9 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 16,
     paddingBottom: 24,
+    width: "100%",
+    alignSelf: "center",
+    maxWidth: 1600,
   },
   hero: {
     backgroundColor: "#f7fafc",
@@ -111,11 +129,12 @@ const styles = StyleSheet.create({
   },
   metricCard: {
     flexGrow: 1,
-    minWidth: 96,
+    flexBasis: 0,
+    minWidth: 112,
     backgroundColor: "#ffffff",
     borderWidth: 1,
     borderColor: "#d9e2ec",
-    borderRadius: 14,
+    borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 14,
     gap: 2,
@@ -144,6 +163,7 @@ const styles = StyleSheet.create({
   },
   section: {
     gap: 10,
+    width: "100%",
   },
   sectionTitle: {
     fontSize: 18,
