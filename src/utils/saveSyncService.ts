@@ -1,6 +1,12 @@
 import * as FileSystem from "expo-file-system";
 import { Platform } from "react-native";
 
+import {
+  base64ToUint8Array,
+  parseSaveFile,
+  parseSaveMetadata,
+} from "@/utils/saveParser";
+
 export type SyncState = "idle" | "syncing" | "error";
 export type SyncDetectionStrategy = "watch" | "polling";
 
@@ -9,11 +15,23 @@ export interface DetectedSaveFile {
   name: string;
   size: number | null;
   modifiedAt: number | null;
+  generationLabel: string | null;
+  trainerName: string | null;
+  trainerId: number | null;
+  money: number | null;
+  rivalName: string | null;
+  badgeCount: number | null;
+  playTimeHours: number | null;
+  playTimeMinutes: number | null;
+  seenCount: number | null;
+  ownedCount: number | null;
+  pokemonCount: number | null;
 }
 
 export interface SaveSyncSnapshot {
   state: SyncState;
   folderUri: string | null;
+  folderRoute: string | null;
   strategy: SyncDetectionStrategy;
   saves: DetectedSaveFile[];
   errorMessage: string | null;
@@ -38,7 +56,10 @@ const WEB_FOLDER_URI = "web://selected-folder";
 type FileSystemCompat = {
   documentDirectory: string | null;
   writeAsStringAsync: (fileUri: string, contents: string) => Promise<void>;
-  readAsStringAsync: (fileUri: string) => Promise<string>;
+  readAsStringAsync: (
+    fileUri: string,
+    options?: { encoding?: string },
+  ) => Promise<string>;
   getInfoAsync: (fileUri: string) => Promise<{
     exists: boolean;
     size?: number;
@@ -56,12 +77,16 @@ type FileSystemCompat = {
     }>;
     readDirectoryAsync: (fileUri: string) => Promise<string[]>;
   };
+  EncodingType?: {
+    Base64: string;
+  };
 };
 
 const fileSystemCompat = FileSystem as unknown as FileSystemCompat;
 
 interface PersistedConfig {
   folderUri: string;
+  folderRoute: string | null;
 }
 
 function getConfigFileUri(): string | null {
@@ -80,7 +105,25 @@ async function persistFolderUri(folderUri: string): Promise<void> {
 
   await fileSystemCompat.writeAsStringAsync(
     configUri,
-    JSON.stringify({ folderUri } satisfies PersistedConfig),
+    JSON.stringify({
+      folderUri,
+      folderRoute: folderUri,
+    } satisfies PersistedConfig),
+  );
+}
+
+async function persistFolderSelection(
+  folderUri: string,
+  folderRoute: string | null,
+): Promise<void> {
+  const configUri = getConfigFileUri();
+  if (!configUri) {
+    return;
+  }
+
+  await fileSystemCompat.writeAsStringAsync(
+    configUri,
+    JSON.stringify({ folderUri, folderRoute } satisfies PersistedConfig),
   );
 }
 
@@ -99,6 +142,26 @@ async function readPersistedFolderUri(): Promise<string | null> {
   try {
     const parsed = JSON.parse(raw) as PersistedConfig;
     return typeof parsed.folderUri === "string" ? parsed.folderUri : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readPersistedFolderRoute(): Promise<string | null> {
+  const configUri = getConfigFileUri();
+  if (!configUri) {
+    return null;
+  }
+
+  const info = await fileSystemCompat.getInfoAsync(configUri);
+  if (!info.exists) {
+    return null;
+  }
+
+  const raw = await fileSystemCompat.readAsStringAsync(configUri);
+  try {
+    const parsed = JSON.parse(raw) as PersistedConfig;
+    return typeof parsed.folderRoute === "string" ? parsed.folderRoute : null;
   } catch {
     return null;
   }
@@ -143,6 +206,7 @@ async function listSaveUris(folderUri: string): Promise<string[]> {
 
 async function resolveSaveEntry(uri: string): Promise<DetectedSaveFile> {
   const info = await fileSystemCompat.getInfoAsync(uri);
+  const metadata = await resolveSaveMetadataFromUri(uri);
 
   return {
     uri,
@@ -152,7 +216,30 @@ async function resolveSaveEntry(uri: string): Promise<DetectedSaveFile> {
       typeof info.modificationTime === "number"
         ? info.modificationTime * 1000
         : null,
+    generationLabel: metadata.generationLabel,
+    trainerName: metadata.trainerName,
+    trainerId: metadata.trainerId,
+    money: metadata.money,
+    rivalName: metadata.rivalName,
+    badgeCount: metadata.badgeCount,
+    playTimeHours: metadata.playTimeHours,
+    playTimeMinutes: metadata.playTimeMinutes,
+    seenCount: metadata.seenCount,
+    ownedCount: metadata.ownedCount,
+    pokemonCount: metadata.pokemonCount,
   };
+}
+
+function resolveWebFolderRoute(files: File[]): string | null {
+  const firstFile = files[0];
+  if (!firstFile) {
+    return null;
+  }
+
+  const relativePath = firstFile.webkitRelativePath || firstFile.name;
+  const folderName = relativePath.split("/")[0];
+
+  return folderName || null;
 }
 
 async function selectWebDirectoryFiles(): Promise<File[] | null> {
@@ -180,7 +267,108 @@ async function selectWebDirectoryFiles(): Promise<File[] | null> {
   });
 }
 
-function resolveWebSaveEntry(file: File, index: number): DetectedSaveFile {
+function emptySaveMetadata(): {
+  generationLabel: string | null;
+  trainerName: string | null;
+  trainerId: number | null;
+  money: number | null;
+  rivalName: string | null;
+  badgeCount: number | null;
+  playTimeHours: number | null;
+  playTimeMinutes: number | null;
+  seenCount: number | null;
+  ownedCount: number | null;
+  pokemonCount: number | null;
+} {
+  return {
+    generationLabel: null,
+    trainerName: null,
+    trainerId: null,
+    money: null,
+    rivalName: null,
+    badgeCount: null,
+    playTimeHours: null,
+    playTimeMinutes: null,
+    seenCount: null,
+    ownedCount: null,
+    pokemonCount: null,
+  };
+}
+
+function parseSaveMetadataSafe(saveBytes: Uint8Array): {
+  generationLabel: string | null;
+  trainerName: string | null;
+  trainerId: number | null;
+  money: number | null;
+  rivalName: string | null;
+  badgeCount: number | null;
+  playTimeHours: number | null;
+  playTimeMinutes: number | null;
+  seenCount: number | null;
+  ownedCount: number | null;
+  pokemonCount: number | null;
+} {
+  try {
+    const metadata = parseSaveMetadata(saveBytes);
+    const pokemonCount = parseSaveFile(saveBytes).filter(
+      (pokemon) => pokemon.isOwned,
+    ).length;
+
+    return {
+      generationLabel: metadata.trainerId > 0 ? "GEN 1" : null,
+      trainerName: metadata.trainerName,
+      trainerId: metadata.trainerId,
+      money: metadata.money,
+      rivalName: metadata.rivalName,
+      badgeCount: metadata.badgeCount,
+      playTimeHours: metadata.playTimeHours,
+      playTimeMinutes: metadata.playTimeMinutes,
+      seenCount: metadata.seenCount,
+      ownedCount: metadata.ownedCount,
+      pokemonCount,
+    };
+  } catch {
+    return emptySaveMetadata();
+  }
+}
+
+async function resolveSaveMetadataFromUri(uri: string): Promise<{
+  generationLabel: string | null;
+  trainerName: string | null;
+  trainerId: number | null;
+  money: number | null;
+  rivalName: string | null;
+  badgeCount: number | null;
+  playTimeHours: number | null;
+  playTimeMinutes: number | null;
+  seenCount: number | null;
+  ownedCount: number | null;
+  pokemonCount: number | null;
+}> {
+  try {
+    const base64 = await fileSystemCompat.readAsStringAsync(uri, {
+      encoding: fileSystemCompat.EncodingType?.Base64 ?? "base64",
+    });
+
+    return parseSaveMetadataSafe(base64ToUint8Array(base64));
+  } catch {
+    return emptySaveMetadata();
+  }
+}
+
+async function resolveWebSaveEntry(
+  file: File,
+  index: number,
+): Promise<DetectedSaveFile> {
+  let metadata = emptySaveMetadata();
+
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    metadata = parseSaveMetadataSafe(bytes);
+  } catch {
+    metadata = emptySaveMetadata();
+  }
+
   return {
     uri: `${WEB_FOLDER_URI}/${encodeURIComponent(file.name)}#${index}`,
     name: file.name,
@@ -189,6 +377,17 @@ function resolveWebSaveEntry(file: File, index: number): DetectedSaveFile {
       typeof file.lastModified === "number" && file.lastModified > 0
         ? file.lastModified
         : null,
+    generationLabel: metadata.generationLabel,
+    trainerName: metadata.trainerName,
+    trainerId: metadata.trainerId,
+    money: metadata.money,
+    rivalName: metadata.rivalName,
+    badgeCount: metadata.badgeCount,
+    playTimeHours: metadata.playTimeHours,
+    playTimeMinutes: metadata.playTimeMinutes,
+    seenCount: metadata.seenCount,
+    ownedCount: metadata.ownedCount,
+    pokemonCount: metadata.pokemonCount,
   };
 }
 
@@ -208,7 +407,18 @@ function hasSnapshotChanged(
       a.uri !== b.uri ||
       a.size !== b.size ||
       a.modifiedAt !== b.modifiedAt ||
-      a.name !== b.name
+      a.name !== b.name ||
+      a.generationLabel !== b.generationLabel ||
+      a.trainerName !== b.trainerName ||
+      a.trainerId !== b.trainerId ||
+      a.money !== b.money ||
+      a.rivalName !== b.rivalName ||
+      a.badgeCount !== b.badgeCount ||
+      a.playTimeHours !== b.playTimeHours ||
+      a.playTimeMinutes !== b.playTimeMinutes ||
+      a.seenCount !== b.seenCount ||
+      a.ownedCount !== b.ownedCount ||
+      a.pokemonCount !== b.pokemonCount
     ) {
       return true;
     }
@@ -224,6 +434,7 @@ export class SaveSyncService {
   private snapshot: SaveSyncSnapshot = {
     state: "idle",
     folderUri: null,
+    folderRoute: null,
     strategy: "polling",
     saves: [],
     errorMessage: null,
@@ -246,13 +457,16 @@ export class SaveSyncService {
 
   async restorePersistedFolderUri(): Promise<SaveSyncSnapshot> {
     const folderUri = await readPersistedFolderUri();
+    const folderRoute = await readPersistedFolderRoute();
 
     const webNeedsReselection =
       Platform.OS === "web" && folderUri === WEB_FOLDER_URI;
+    const nextFolderUri = webNeedsReselection ? null : folderUri;
 
     this.snapshot = {
       ...this.snapshot,
-      folderUri,
+      folderUri: nextFolderUri,
+      folderRoute,
       state: "idle",
       errorMessage: webNeedsReselection
         ? "Re-select the folder on Web to restore browser access."
@@ -277,11 +491,15 @@ export class SaveSyncService {
       }
 
       this.webSelectedFiles = selectedFiles;
-      await persistFolderUri(WEB_FOLDER_URI);
+      await persistFolderSelection(
+        WEB_FOLDER_URI,
+        resolveWebFolderRoute(selectedFiles),
+      );
 
       this.snapshot = {
         ...this.snapshot,
         folderUri: WEB_FOLDER_URI,
+        folderRoute: resolveWebFolderRoute(selectedFiles),
         state: "idle",
         errorMessage: null,
       };
@@ -326,6 +544,7 @@ export class SaveSyncService {
     this.snapshot = {
       ...this.snapshot,
       folderUri: permissionResult.directoryUri,
+      folderRoute: permissionResult.directoryUri,
       state: "idle",
       errorMessage: null,
     };
@@ -342,6 +561,7 @@ export class SaveSyncService {
       ...this.snapshot,
       state: "idle",
       folderUri: null,
+      folderRoute: null,
       saves: [],
       errorMessage: null,
       lastSyncAt: null,
@@ -369,6 +589,18 @@ export class SaveSyncService {
     };
 
     if (Platform.OS === "web" && folderUri === WEB_FOLDER_URI) {
+      if (this.webSelectedFiles.length === 0) {
+        this.snapshot = {
+          ...this.snapshot,
+          state: "error",
+          strategy: "polling",
+          errorMessage:
+            "Re-select the folder on Web to restore browser access.",
+        };
+
+        return this.snapshot;
+      }
+
       const webSaveFiles = this.webSelectedFiles
         .filter((file) => file.name.toLowerCase().endsWith(".sav"))
         .sort((a, b) => a.name.localeCompare(b.name));
@@ -377,7 +609,9 @@ export class SaveSyncService {
         ...this.snapshot,
         state: "idle",
         strategy: "polling",
-        saves: webSaveFiles.map(resolveWebSaveEntry),
+        saves: await Promise.all(
+          webSaveFiles.map((file, index) => resolveWebSaveEntry(file, index)),
+        ),
         errorMessage: null,
         lastSyncAt: Date.now(),
       };

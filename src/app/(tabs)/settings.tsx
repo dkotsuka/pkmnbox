@@ -25,6 +25,9 @@ export default function SettingsScreen() {
             Selected folder: {snapshot.folderUri ?? "none"}
           </Text>
           <Text style={styles.label}>
+            Selected route: {snapshot.folderRoute ?? "none"}
+          </Text>
+          <Text style={styles.label}>
             Detected saves: {snapshot.saves.length}
           </Text>
           <Text style={styles.label}>
