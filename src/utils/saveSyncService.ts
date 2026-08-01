@@ -3,9 +3,11 @@ import { Platform } from "react-native";
 
 import {
   base64ToUint8Array,
+  parsePartyAndBoxes,
   parseSaveFile,
   parseSaveMetadata,
   type PokemonStatus,
+  type PokemonStorageSlot,
 } from "@/utils/saveParser";
 
 export type SyncState = "idle" | "syncing" | "error";
@@ -28,6 +30,9 @@ export interface DetectedSaveFile {
   ownedCount: number | null;
   pokemonCount: number | null;
   pokedexStatuses: PokemonStatus[];
+  currentBoxNumber: number | null;
+  party: PokemonStorageSlot[];
+  boxes: PokemonStorageSlot[][];
 }
 
 export interface SaveSyncSnapshot {
@@ -87,8 +92,53 @@ type FileSystemCompat = {
 const fileSystemCompat = FileSystem as unknown as FileSystemCompat;
 
 interface PersistedConfig {
-  folderUri: string;
+  folderUri: string | null;
   folderRoute: string | null;
+  saves: DetectedSaveFile[];
+}
+
+function emptyPersistedConfig(): PersistedConfig {
+  return {
+    folderUri: null,
+    folderRoute: null,
+    saves: [],
+  };
+}
+
+async function readPersistedConfig(): Promise<PersistedConfig> {
+  const configUri = getConfigFileUri();
+  if (!configUri) {
+    return emptyPersistedConfig();
+  }
+
+  const info = await fileSystemCompat.getInfoAsync(configUri);
+  if (!info.exists) {
+    return emptyPersistedConfig();
+  }
+
+  const raw = await fileSystemCompat.readAsStringAsync(configUri);
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedConfig>;
+    return {
+      folderUri: typeof parsed.folderUri === "string" ? parsed.folderUri : null,
+      folderRoute:
+        typeof parsed.folderRoute === "string" ? parsed.folderRoute : null,
+      saves: Array.isArray(parsed.saves)
+        ? (parsed.saves as DetectedSaveFile[])
+        : [],
+    };
+  } catch {
+    return emptyPersistedConfig();
+  }
+}
+
+async function writePersistedConfig(config: PersistedConfig): Promise<void> {
+  const configUri = getConfigFileUri();
+  if (!configUri) {
+    return;
+  }
+
+  await fileSystemCompat.writeAsStringAsync(configUri, JSON.stringify(config));
 }
 
 function getConfigFileUri(): string | null {
@@ -100,36 +150,99 @@ function getConfigFileUri(): string | null {
 }
 
 async function persistFolderUri(folderUri: string): Promise<void> {
-  const configUri = getConfigFileUri();
-  if (!configUri) {
-    return;
-  }
-
-  await fileSystemCompat.writeAsStringAsync(
-    configUri,
-    JSON.stringify({
-      folderUri,
-      folderRoute: folderUri,
-    } satisfies PersistedConfig),
-  );
+  const persisted = await readPersistedConfig();
+  await writePersistedConfig({
+    ...persisted,
+    folderUri,
+    folderRoute: folderUri,
+  });
 }
 
 async function persistFolderSelection(
   folderUri: string,
   folderRoute: string | null,
 ): Promise<void> {
-  const configUri = getConfigFileUri();
-  if (!configUri) {
-    return;
-  }
+  const persisted = await readPersistedConfig();
+  await writePersistedConfig({
+    ...persisted,
+    folderUri,
+    folderRoute,
+  });
+}
 
-  await fileSystemCompat.writeAsStringAsync(
-    configUri,
-    JSON.stringify({ folderUri, folderRoute } satisfies PersistedConfig),
-  );
+async function persistSaves(saves: DetectedSaveFile[]): Promise<void> {
+  const persisted = await readPersistedConfig();
+  await writePersistedConfig({
+    ...persisted,
+    saves,
+  });
 }
 
 async function readPersistedFolderUri(): Promise<string | null> {
+  const persisted = await readPersistedConfig();
+  return persisted.folderUri;
+}
+
+async function readPersistedFolderRoute(): Promise<string | null> {
+  const persisted = await readPersistedConfig();
+  return persisted.folderRoute;
+}
+
+async function readPersistedSaves(): Promise<DetectedSaveFile[]> {
+  const persisted = await readPersistedConfig();
+  return persisted.saves;
+}
+
+async function clearPersistedFolderUri(): Promise<void> {
+  const persisted = await readPersistedConfig();
+  await writePersistedConfig({
+    ...persisted,
+    folderUri: null,
+    folderRoute: null,
+  });
+}
+
+async function clearPersistedSaves(): Promise<void> {
+  const persisted = await readPersistedConfig();
+  await writePersistedConfig({
+    ...persisted,
+    saves: [],
+  });
+}
+
+function mergeSavesByName(
+  persistedSaves: DetectedSaveFile[],
+  loadedSaves: DetectedSaveFile[],
+): DetectedSaveFile[] {
+  const merged = new Map<string, DetectedSaveFile>();
+
+  for (const saveFile of persistedSaves) {
+    const key = saveFile.name.trim().toLowerCase();
+    if (key) {
+      merged.set(key, saveFile);
+    }
+  }
+
+  for (const saveFile of loadedSaves) {
+    const key = saveFile.name.trim().toLowerCase();
+    if (key) {
+      merged.set(key, saveFile);
+    }
+  }
+
+  return [...merged.values()].sort((a, b) => {
+    const left = a.modifiedAt ?? 0;
+    const right = b.modifiedAt ?? 0;
+
+    if (left !== right) {
+      return right - left;
+    }
+
+    return a.name.localeCompare(b.name);
+  });
+}
+
+async function readPersistedFolderUriLegacy(): Promise<string | null> {
   const configUri = getConfigFileUri();
   if (!configUri) {
     return null;
@@ -149,38 +262,27 @@ async function readPersistedFolderUri(): Promise<string | null> {
   }
 }
 
-async function readPersistedFolderRoute(): Promise<string | null> {
-  const configUri = getConfigFileUri();
-  if (!configUri) {
-    return null;
-  }
-
-  const info = await fileSystemCompat.getInfoAsync(configUri);
-  if (!info.exists) {
-    return null;
-  }
-
-  const raw = await fileSystemCompat.readAsStringAsync(configUri);
-  try {
-    const parsed = JSON.parse(raw) as PersistedConfig;
-    return typeof parsed.folderRoute === "string" ? parsed.folderRoute : null;
-  } catch {
-    return null;
-  }
-}
-
-async function clearPersistedFolderUri(): Promise<void> {
-  const configUri = getConfigFileUri();
-  if (!configUri) {
+// Backward-compat fallback for legacy config shapes.
+async function migrateLegacyFolderUriIfNeeded(): Promise<void> {
+  const persisted = await readPersistedConfig();
+  if (
+    persisted.folderUri ||
+    persisted.folderRoute ||
+    persisted.saves.length > 0
+  ) {
     return;
   }
 
-  const info = await fileSystemCompat.getInfoAsync(configUri);
-  if (!info.exists) {
+  const legacyFolderUri = await readPersistedFolderUriLegacy();
+  if (!legacyFolderUri) {
     return;
   }
 
-  await fileSystemCompat.deleteAsync(configUri, { idempotent: true });
+  await writePersistedConfig({
+    folderUri: legacyFolderUri,
+    folderRoute: legacyFolderUri,
+    saves: [],
+  });
 }
 
 function fileNameFromUri(uri: string): string {
@@ -229,6 +331,10 @@ async function resolveSaveEntry(uri: string): Promise<DetectedSaveFile> {
     seenCount: metadata.seenCount,
     ownedCount: metadata.ownedCount,
     pokemonCount: metadata.pokemonCount,
+    pokedexStatuses: metadata.pokedexStatuses,
+    currentBoxNumber: metadata.currentBoxNumber,
+    party: metadata.party,
+    boxes: metadata.boxes,
   };
 }
 
@@ -282,6 +388,9 @@ function emptySaveMetadata(): {
   ownedCount: number | null;
   pokemonCount: number | null;
   pokedexStatuses: PokemonStatus[];
+  currentBoxNumber: number | null;
+  party: PokemonStorageSlot[];
+  boxes: PokemonStorageSlot[][];
 } {
   return {
     generationLabel: null,
@@ -296,6 +405,9 @@ function emptySaveMetadata(): {
     ownedCount: null,
     pokemonCount: null,
     pokedexStatuses: [],
+    currentBoxNumber: null,
+    party: [],
+    boxes: [],
   };
 }
 
@@ -312,10 +424,14 @@ function parseSaveMetadataSafe(saveBytes: Uint8Array): {
   ownedCount: number | null;
   pokemonCount: number | null;
   pokedexStatuses: PokemonStatus[];
+  currentBoxNumber: number | null;
+  party: PokemonStorageSlot[];
+  boxes: PokemonStorageSlot[][];
 } {
   try {
     const metadata = parseSaveMetadata(saveBytes);
     const pokedexStatuses = parseSaveFile(saveBytes);
+    const storageData = parsePartyAndBoxes(saveBytes);
     const pokemonCount = pokedexStatuses.filter(
       (pokemon) => pokemon.isOwned,
     ).length;
@@ -333,6 +449,9 @@ function parseSaveMetadataSafe(saveBytes: Uint8Array): {
       ownedCount: metadata.ownedCount,
       pokemonCount,
       pokedexStatuses,
+      currentBoxNumber: storageData.currentBoxNumber,
+      party: storageData.party,
+      boxes: storageData.boxes,
     };
   } catch {
     return emptySaveMetadata();
@@ -352,6 +471,9 @@ async function resolveSaveMetadataFromUri(uri: string): Promise<{
   ownedCount: number | null;
   pokemonCount: number | null;
   pokedexStatuses: PokemonStatus[];
+  currentBoxNumber: number | null;
+  party: PokemonStorageSlot[];
+  boxes: PokemonStorageSlot[][];
 }> {
   try {
     const base64 = await fileSystemCompat.readAsStringAsync(uri, {
@@ -397,6 +519,9 @@ async function resolveWebSaveEntry(
     ownedCount: metadata.ownedCount,
     pokemonCount: metadata.pokemonCount,
     pokedexStatuses: metadata.pokedexStatuses,
+    currentBoxNumber: metadata.currentBoxNumber,
+    party: metadata.party,
+    boxes: metadata.boxes,
   };
 }
 
@@ -454,6 +579,9 @@ function hasSnapshotChanged(
       a.seenCount !== b.seenCount ||
       a.ownedCount !== b.ownedCount ||
       a.pokemonCount !== b.pokemonCount ||
+      a.currentBoxNumber !== b.currentBoxNumber ||
+      JSON.stringify(a.party) !== JSON.stringify(b.party) ||
+      JSON.stringify(a.boxes) !== JSON.stringify(b.boxes) ||
       hasPokedexStatusChanged(a.pokedexStatuses, b.pokedexStatuses)
     ) {
       return true;
@@ -492,8 +620,11 @@ export class SaveSyncService {
   }
 
   async restorePersistedFolderUri(): Promise<SaveSyncSnapshot> {
+    await migrateLegacyFolderUriIfNeeded();
+
     const folderUri = await readPersistedFolderUri();
     const folderRoute = await readPersistedFolderRoute();
+    const persistedSaves = await readPersistedSaves();
 
     const webNeedsReselection =
       Platform.OS === "web" && folderUri === WEB_FOLDER_URI;
@@ -507,7 +638,7 @@ export class SaveSyncService {
       errorMessage: webNeedsReselection
         ? "Re-select the folder on Web to restore browser access."
         : null,
-      saves: [],
+      saves: persistedSaves,
     };
 
     return this.snapshot;
@@ -591,6 +722,7 @@ export class SaveSyncService {
   async clearFolderSelection(): Promise<SaveSyncSnapshot> {
     this.stopAutoSync();
     await clearPersistedFolderUri();
+    await clearPersistedSaves();
     this.webSelectedFiles = [];
 
     this.snapshot = {
@@ -641,13 +773,20 @@ export class SaveSyncService {
         .filter((file) => file.name.toLowerCase().endsWith(".sav"))
         .sort((a, b) => a.name.localeCompare(b.name));
 
+      const loadedSaves = await Promise.all(
+        webSaveFiles.map((file, index) => resolveWebSaveEntry(file, index)),
+      );
+      const mergedSaves = mergeSavesByName(
+        await readPersistedSaves(),
+        loadedSaves,
+      );
+      await persistSaves(mergedSaves);
+
       this.snapshot = {
         ...this.snapshot,
         state: "idle",
         strategy: "polling",
-        saves: await Promise.all(
-          webSaveFiles.map((file, index) => resolveWebSaveEntry(file, index)),
-        ),
+        saves: mergedSaves,
         errorMessage: null,
         lastSyncAt: Date.now(),
       };
@@ -659,11 +798,16 @@ export class SaveSyncService {
       const entries = await listSaveUris(folderUri);
       const saveUris = entries.filter(isSaveFile).sort();
       const saveDetails = await Promise.all(saveUris.map(resolveSaveEntry));
+      const mergedSaves = mergeSavesByName(
+        await readPersistedSaves(),
+        saveDetails,
+      );
+      await persistSaves(mergedSaves);
 
       this.snapshot = {
         ...this.snapshot,
         state: "idle",
-        saves: saveDetails,
+        saves: mergedSaves,
         errorMessage: null,
         lastSyncAt: Date.now(),
       };

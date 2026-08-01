@@ -18,7 +18,7 @@ export default function TabLayout() {
       <Tabs>
         <Tabs.Screen name="index" options={{ title: "Home" }} />
         <Tabs.Screen name="pokedex" options={{ title: "Pokedex" }} />
-        <Tabs.Screen name="about" options={{ title: "About" }} />
+        <Tabs.Screen name="boxes" options={{ title: "Boxes" }} />
         <Tabs.Screen name="settings" options={{ title: "Settings" }} />
       </Tabs>
     </SaveSyncProvider>
@@ -38,9 +38,9 @@ function WebLayout() {
           isActive={pathname.startsWith("/pokedex")}
         />
         <NavItem
-          href="/about"
-          label="About"
-          isActive={pathname.startsWith("/about")}
+          href="/boxes"
+          label="Boxes"
+          isActive={pathname.startsWith("/boxes")}
         />
         <NavItem
           href="/settings"
@@ -61,7 +61,7 @@ function NavItem({
   label,
   isActive,
 }: {
-  href: "/" | "/pokedex" | "/about" | "/settings";
+  href: "/" | "/pokedex" | "/boxes" | "/settings";
   label: string;
   isActive: boolean;
 }) {
