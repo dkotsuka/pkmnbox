@@ -28,6 +28,16 @@ export interface SaveMetadata {
 export interface PokemonStorageSlot {
   speciesIndex: number | null;
   pokedexId: number | null;
+  ivs: PokemonBattleStats | null;
+  evs: PokemonBattleStats | null;
+}
+
+export interface PokemonBattleStats {
+  hp: number;
+  attack: number;
+  defense: number;
+  speed: number;
+  special: number;
 }
 
 export interface ParsedStorageData {
@@ -418,28 +428,119 @@ function parseSpeciesSlots(
   speciesOffset: number,
   count: number,
   slotCount: number,
+  resolveStructOffset?: (slotIndex: number) => {
+    baseOffset: number;
+    statExpOffset: number;
+    dvOffset: number;
+  },
 ): PokemonStorageSlot[] {
   const slots: PokemonStorageSlot[] = [];
 
   for (let slotIndex = 0; slotIndex < slotCount; slotIndex++) {
     if (slotIndex >= count) {
-      slots.push({ speciesIndex: null, pokedexId: null });
+      slots.push({ speciesIndex: null, pokedexId: null, ivs: null, evs: null });
       continue;
     }
 
     const rawSpecies = saveBytes[speciesOffset + slotIndex] ?? 0;
     if (rawSpecies <= 0 || rawSpecies === 0xff) {
-      slots.push({ speciesIndex: null, pokedexId: null });
+      slots.push({ speciesIndex: null, pokedexId: null, ivs: null, evs: null });
       continue;
     }
+
+    const structOffsets = resolveStructOffset?.(slotIndex);
+    const ivs = structOffsets
+      ? parseIvStats(
+          saveBytes,
+          structOffsets.baseOffset + structOffsets.dvOffset,
+        )
+      : null;
+    const evs = structOffsets
+      ? parseEvStats(
+          saveBytes,
+          structOffsets.baseOffset + structOffsets.statExpOffset,
+        )
+      : null;
 
     slots.push({
       speciesIndex: rawSpecies,
       pokedexId: resolvePokedexIdFromSpeciesIndex(rawSpecies),
+      ivs,
+      evs,
     });
   }
 
   return slots;
+}
+
+function parseWord(saveBytes: Uint8Array, offset: number): number | null {
+  const highByte = saveBytes[offset];
+  const lowByte = saveBytes[offset + 1];
+
+  if (typeof highByte !== "number" || typeof lowByte !== "number") {
+    return null;
+  }
+
+  return ((highByte & 0xff) << 8) | (lowByte & 0xff);
+}
+
+function parseIvStats(
+  saveBytes: Uint8Array,
+  dvOffset: number,
+): PokemonBattleStats | null {
+  const firstDvByte = saveBytes[dvOffset];
+  const secondDvByte = saveBytes[dvOffset + 1];
+
+  if (typeof firstDvByte !== "number" || typeof secondDvByte !== "number") {
+    return null;
+  }
+
+  const attack = (firstDvByte >> 4) & 0x0f;
+  const defense = firstDvByte & 0x0f;
+  const speed = (secondDvByte >> 4) & 0x0f;
+  const special = secondDvByte & 0x0f;
+  const hp =
+    ((attack & 0x01) << 3) |
+    ((defense & 0x01) << 2) |
+    ((speed & 0x01) << 1) |
+    (special & 0x01);
+
+  return {
+    hp,
+    attack,
+    defense,
+    speed,
+    special,
+  };
+}
+
+function parseEvStats(
+  saveBytes: Uint8Array,
+  statExpOffset: number,
+): PokemonBattleStats | null {
+  const hp = parseWord(saveBytes, statExpOffset);
+  const attack = parseWord(saveBytes, statExpOffset + 2);
+  const defense = parseWord(saveBytes, statExpOffset + 4);
+  const speed = parseWord(saveBytes, statExpOffset + 6);
+  const special = parseWord(saveBytes, statExpOffset + 8);
+
+  if (
+    hp === null ||
+    attack === null ||
+    defense === null ||
+    speed === null ||
+    special === null
+  ) {
+    return null;
+  }
+
+  return {
+    hp,
+    attack,
+    defense,
+    speed,
+    special,
+  };
 }
 
 export const parsePartyAndBoxes = (
@@ -458,6 +559,13 @@ export const parsePartyAndBoxes = (
     GEN1_SAVE_MAP.PARTY_SPECIES.OFFSET,
     partyCount,
     GEN1_SAVE_MAP.PARTY_SPECIES.LENGTH,
+    (slotIndex) => ({
+      baseOffset:
+        GEN1_SAVE_MAP.PARTY_DATA_START.OFFSET +
+        slotIndex * GEN1_SAVE_MAP.PARTY_DATA_START.STRUCT_SIZE,
+      statExpOffset: GEN1_SAVE_MAP.PARTY_MON_STAT_EXP_OFFSET,
+      dvOffset: GEN1_SAVE_MAP.PARTY_MON_DV_OFFSET,
+    }),
   );
 
   const rawCurrentBox = saveBytes[GEN1_SAVE_MAP.CURRENT_BOX_NUMBER.OFFSET] ?? 0;
@@ -482,6 +590,8 @@ export const parsePartyAndBoxes = (
         Array.from({ length: GEN1_SAVE_MAP.BOX_CAPACITY }, () => ({
           speciesIndex: null,
           pokedexId: null,
+          ivs: null,
+          evs: null,
         })),
       );
       continue;
@@ -494,9 +604,17 @@ export const parsePartyAndBoxes = (
     boxes.push(
       parseSpeciesSlots(
         saveBytes,
-        baseOffset + 1,
+        baseOffset + GEN1_SAVE_MAP.BOX_SPECIES_LIST_OFFSET,
         boxCount,
         GEN1_SAVE_MAP.BOX_CAPACITY,
+        (slotIndex) => ({
+          baseOffset:
+            baseOffset +
+            GEN1_SAVE_MAP.BOX_MON_STRUCTS_OFFSET +
+            slotIndex * GEN1_SAVE_MAP.BOX_MON_STRUCT_SIZE,
+          statExpOffset: GEN1_SAVE_MAP.BOX_MON_STAT_EXP_OFFSET,
+          dvOffset: GEN1_SAVE_MAP.BOX_MON_DV_OFFSET,
+        }),
       ),
     );
   }

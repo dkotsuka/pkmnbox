@@ -1,7 +1,9 @@
 import { Picker } from "@react-native-picker/picker";
 import { Image } from "expo-image";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,11 +13,72 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useSaveSync } from "@/hooks/saveSyncContext";
+import type { PokemonStorageSlot } from "@/utils/saveParser";
 
 const PARTY_CAPACITY = 6;
 
+interface PokemonTooltipInfo {
+  name: string;
+  stats: {
+    hp: number;
+    attack: number;
+    defense: number;
+    specialAttack: number;
+    specialDefense: number;
+    speed: number;
+  };
+}
+
+type PokemonGrade = "A" | "B" | "C" | "D" | "E" | "F";
+
 function buildSpriteUrl(pokedexId: number): string {
   return `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${pokedexId}.png`;
+}
+
+function evaluatePokemonGrade(slot: PokemonStorageSlot): PokemonGrade {
+  const ivs = slot.ivs;
+
+  if (!ivs) {
+    return "F";
+  }
+
+  const ivTotal = ivs.hp + ivs.attack + ivs.defense + ivs.speed + ivs.special;
+  const potentialScore = ivTotal / 75;
+
+  if (potentialScore >= 0.85) {
+    return "A";
+  }
+  if (potentialScore >= 0.72) {
+    return "B";
+  }
+  if (potentialScore >= 0.59) {
+    return "C";
+  }
+  if (potentialScore >= 0.46) {
+    return "D";
+  }
+  if (potentialScore >= 0.32) {
+    return "E";
+  }
+
+  return "F";
+}
+
+function gradeBadgeStyle(grade: PokemonGrade) {
+  switch (grade) {
+    case "A":
+      return { backgroundColor: "#16a34a", color: "#f0fdf4" };
+    case "B":
+      return { backgroundColor: "#65a30d", color: "#f7fee7" };
+    case "C":
+      return { backgroundColor: "#ca8a04", color: "#fefce8" };
+    case "D":
+      return { backgroundColor: "#ea580c", color: "#fff7ed" };
+    case "E":
+      return { backgroundColor: "#dc2626", color: "#fef2f2" };
+    case "F":
+      return { backgroundColor: "#7f1d1d", color: "#fef2f2" };
+  }
 }
 
 export default function BoxesScreen() {
@@ -37,6 +100,117 @@ export default function BoxesScreen() {
   const selectedSave =
     orderedSaves.find((saveFile) => saveFile.uri === resolvedSelectedSaveUri) ??
     null;
+  const [pokemonInfoById, setPokemonInfoById] = useState<
+    Record<number, PokemonTooltipInfo>
+  >({});
+  const [failedInfoIds, setFailedInfoIds] = useState<Record<number, true>>({});
+  const pendingInfoIdsRef = useRef<Set<number>>(new Set<number>());
+
+  useEffect(() => {
+    const uniqueIds = new Set<number>();
+
+    for (const slot of selectedSave?.party ?? []) {
+      if (slot.pokedexId) {
+        uniqueIds.add(slot.pokedexId);
+      }
+    }
+
+    for (const box of selectedSave?.boxes ?? []) {
+      for (const slot of box) {
+        if (slot.pokedexId) {
+          uniqueIds.add(slot.pokedexId);
+        }
+      }
+    }
+
+    const idsToLoad = [...uniqueIds].filter(
+      (id) => !pokemonInfoById[id] && !pendingInfoIdsRef.current.has(id),
+    );
+    if (idsToLoad.length === 0) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    for (const id of idsToLoad) {
+      pendingInfoIdsRef.current.add(id);
+    }
+
+    void Promise.all(
+      idsToLoad.map(async (id) => {
+        try {
+          const response = await fetch(
+            `https://pokeapi.co/api/v2/pokemon/${id}`,
+          );
+          if (!response.ok) {
+            return;
+          }
+
+          const data = (await response.json()) as {
+            name?: string;
+            stats?: {
+              base_stat: number;
+              stat?: { name?: string };
+            }[];
+          };
+
+          const statMap: Record<string, number> = {};
+          for (const statEntry of data.stats ?? []) {
+            const statName = statEntry.stat?.name;
+            if (!statName) {
+              continue;
+            }
+
+            statMap[statName] = statEntry.base_stat;
+          }
+
+          const prettyName = (data.name ?? `pokemon-${id}`)
+            .replace(/-/g, " ")
+            .replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+          if (isCancelled) {
+            return;
+          }
+
+          setPokemonInfoById((current) => ({
+            ...current,
+            [id]: {
+              name: prettyName,
+              stats: {
+                hp: statMap.hp ?? 0,
+                attack: statMap.attack ?? 0,
+                defense: statMap.defense ?? 0,
+                specialAttack: statMap["special-attack"] ?? 0,
+                specialDefense: statMap["special-defense"] ?? 0,
+                speed: statMap.speed ?? 0,
+              },
+            },
+          }));
+          setFailedInfoIds((current) => {
+            if (!current[id]) {
+              return current;
+            }
+
+            const next = { ...current };
+            delete next[id];
+            return next;
+          });
+        } catch {
+          if (isCancelled) {
+            return;
+          }
+
+          setFailedInfoIds((current) => ({ ...current, [id]: true }));
+        } finally {
+          pendingInfoIdsRef.current.delete(id);
+        }
+      }),
+    );
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedSave, pokemonInfoById]);
 
   const slotSize = width >= 720 ? 56 : 52;
   const partyColumns = 3;
@@ -90,7 +264,15 @@ export default function BoxesScreen() {
                   return (
                     <SlotSquare
                       key={`party-${index}`}
-                      pokedexId={slot?.pokedexId ?? null}
+                      slot={slot}
+                      info={
+                        slot?.pokedexId
+                          ? pokemonInfoById[slot.pokedexId]
+                          : undefined
+                      }
+                      isInfoUnavailable={
+                        !!(slot?.pokedexId && failedInfoIds[slot.pokedexId])
+                      }
                       size={slotSize}
                     />
                   );
@@ -115,7 +297,15 @@ export default function BoxesScreen() {
                     {boxSlots.map((slot, slotIndex) => (
                       <SlotSquare
                         key={`box-${boxIndex + 1}-${slotIndex + 1}`}
-                        pokedexId={slot.pokedexId}
+                        slot={slot}
+                        info={
+                          slot.pokedexId
+                            ? pokemonInfoById[slot.pokedexId]
+                            : undefined
+                        }
+                        isInfoUnavailable={
+                          !!(slot.pokedexId && failedInfoIds[slot.pokedexId])
+                        }
                         size={slotSize}
                       />
                     ))}
@@ -131,12 +321,20 @@ export default function BoxesScreen() {
 }
 
 function SlotSquare({
-  pokedexId,
+  slot,
+  info,
+  isInfoUnavailable,
   size,
 }: {
-  pokedexId: number | null;
+  slot: PokemonStorageSlot | null;
+  info?: PokemonTooltipInfo;
+  isInfoUnavailable: boolean;
   size: number;
 }) {
+  const [isHovered, setIsHovered] = useState(false);
+  const pokedexId = slot?.pokedexId ?? null;
+  const grade = slot && pokedexId ? evaluatePokemonGrade(slot) : null;
+
   if (!pokedexId) {
     return (
       <View
@@ -153,13 +351,65 @@ function SlotSquare({
   }
 
   return (
-    <View style={[styles.slot, { width: size, height: size }]}>
-      <Image
-        source={{ uri: buildSpriteUrl(pokedexId) }}
-        style={styles.sprite}
-        contentFit="contain"
-        cachePolicy="memory-disk"
-      />
+    <View style={[styles.slotWrapper, { width: size, height: size }]}>
+      <Pressable
+        style={[styles.slot, { width: size, height: size }]}
+        onHoverIn={Platform.OS === "web" ? () => setIsHovered(true) : undefined}
+        onHoverOut={
+          Platform.OS === "web" ? () => setIsHovered(false) : undefined
+        }
+      >
+        <Image
+          source={{ uri: buildSpriteUrl(pokedexId) }}
+          style={styles.sprite}
+          contentFit="contain"
+          cachePolicy="memory-disk"
+        />
+
+        {grade ? (
+          <View
+            style={[
+              styles.gradeBadge,
+              { backgroundColor: gradeBadgeStyle(grade).backgroundColor },
+            ]}
+          >
+            <Text
+              style={[
+                styles.gradeText,
+                { color: gradeBadgeStyle(grade).color },
+              ]}
+            >
+              {grade}
+            </Text>
+          </View>
+        ) : null}
+      </Pressable>
+
+      {Platform.OS === "web" && isHovered ? (
+        <View pointerEvents="none" style={styles.tooltip}>
+          <Text style={styles.tooltipTitle}>
+            {info?.name ?? `Pokemon ${pokedexId}`}
+          </Text>
+          {info ? (
+            <>
+              <Text style={styles.tooltipLine}>HP: {info.stats.hp}</Text>
+              <Text style={styles.tooltipLine}>ATK: {info.stats.attack}</Text>
+              <Text style={styles.tooltipLine}>DEF: {info.stats.defense}</Text>
+              <Text style={styles.tooltipLine}>
+                SpA: {info.stats.specialAttack}
+              </Text>
+              <Text style={styles.tooltipLine}>
+                SpD: {info.stats.specialDefense}
+              </Text>
+              <Text style={styles.tooltipLine}>SPE: {info.stats.speed}</Text>
+            </>
+          ) : isInfoUnavailable ? (
+            <Text style={styles.tooltipLine}>Stats indisponiveis</Text>
+          ) : (
+            <Text style={styles.tooltipLine}>Carregando stats...</Text>
+          )}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -224,7 +474,12 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 8,
   },
+  slotWrapper: {
+    position: "relative",
+    overflow: "visible",
+  },
   slot: {
+    position: "relative",
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "#d4dde8",
@@ -236,6 +491,48 @@ const styles = StyleSheet.create({
   sprite: {
     width: "100%",
     height: "100%",
+  },
+  gradeBadge: {
+    position: "absolute",
+    right: 2,
+    bottom: 2,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#f8fafc",
+  },
+  gradeText: {
+    fontSize: 10,
+    fontWeight: "800",
+    lineHeight: 11,
+  },
+  tooltip: {
+    position: "absolute",
+    left: 0,
+    bottom: "100%",
+    marginBottom: 6,
+    minWidth: 132,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: "#111827",
+    borderWidth: 1,
+    borderColor: "#334155",
+    zIndex: 50,
+  },
+  tooltipTitle: {
+    color: "#f8fafc",
+    fontSize: 12,
+    fontWeight: "700",
+    marginBottom: 4,
+  },
+  tooltipLine: {
+    color: "#e2e8f0",
+    fontSize: 11,
+    lineHeight: 15,
   },
   emptyText: {
     width: "100%",
